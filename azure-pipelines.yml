@@ -1,17 +1,102 @@
-# ASP.NET Core
-# Build and test ASP.NET Core projects targeting .NET Core.
-# Add steps that run tests, create a NuGet package, deploy, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/languages/dotnet-core
+# Azure Pipelines YAML for building and deploying dotnetproject2 in two stages
 
 trigger:
-- master
-
-pool:
-  vmImage: ubuntu-latest
+  branches:
+    include:
+      - master  # Trigger pipeline on push to master branch
 
 variables:
-  buildConfiguration: 'Release'
+  solution: '**/*.sln'  # Path to the solution file
+  buildConfiguration: 'Release'  # Build configuration
+  serviceConnectionName: 'myserviceconnection'  # Service connection name
+  projectName: 'dotnetproject2'  # Project name
+  azureWebAppName: '$(projectName)'  # Azure Web App name
+  artifactName: 'dotnetproject2-artifact'  # Artifact name
 
-steps:
-- script: dotnet build --configuration $(buildConfiguration)
-  displayName: 'dotnet build $(buildConfiguration)'
+stages:
+  # Stage 1: Build and Test
+  - stage: Build
+    displayName: 'Build and Test'
+    jobs:
+      - job: BuildJob
+        displayName: 'Build and Test Job'
+        pool:
+          vmImage: 'ubuntu-latest'  # Use Ubuntu for build
+        steps:
+          # Install .NET SDK
+          - task: UseDotNet@2
+            displayName: 'Install .NET SDK'
+            inputs:
+              packageType: 'sdk'
+              version: '8.x'  # Adjust to your .NET version (e.g., 6.x, 7.x)
+
+          # Restore NuGet packages
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore NuGet packages'
+            inputs:
+              command: 'restore'
+              projects: '$(solution)'
+              feedsToUse: 'select'
+
+          # Build the solution
+          - task: DotNetCoreCLI@2
+            displayName: 'Build solution'
+            inputs:
+              command: 'build'
+              projects: '$(solution)'
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+
+          # Run tests (optional, assumes test projects exist)
+          - task: DotNetCoreCLI@2
+            displayName: 'Run tests'
+            inputs:
+              command: 'test'
+              projects: '**/*[Tt]ests/*.csproj'
+              arguments: '--configuration $(buildConfiguration) --no-build --no-restore'
+              publishTestResults: true
+
+          # Publish the project
+          - task: DotNetCoreCLI@2
+            displayName: 'Publish project'
+            inputs:
+              command: 'publish'
+              publishWebProjects: true
+              arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/$(projectName)'
+              zipAfterPublish: true
+
+          # Publish build artifacts
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish artifacts'
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: '$(artifactName)'
+              publishLocation: 'Container'
+
+  # Stage 2: Deploy
+  - stage: Deploy
+    displayName: 'Deploy to Azure Web App'
+    dependsOn: Build  # Deploy only after Build stage succeeds
+    condition: succeeded()  # Run only if Build stage is successful
+    jobs:
+      - job: DeployJob
+        displayName: 'Deploy Job'
+        pool:
+          vmImage: 'ubuntu-latest'  # Use Ubuntu for deployment
+        steps:
+          # Download the published artifact
+          - task: DownloadBuildArtifacts@1
+            displayName: 'Download build artifacts'
+            inputs:
+              buildType: 'current'
+              artifactName: '$(artifactName)'
+              downloadPath: '$(System.ArtifactsDirectory)'
+
+          # Deploy to Azure Web App
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Azure Web App'
+            inputs:
+              azureSubscription: '$(serviceConnectionName)'  # Use myserviceconnection
+              appType: 'webAppLinux'  # Adjust to 'webApp' for Windows-based App Service
+              appName: '$(azureWebAppName)'  # Azure Web App name
+              package: '$(System.ArtifactsDirectory)/$(artifactName)/$(projectName)/*.zip'
+              deploymentMethod: 'auto'
