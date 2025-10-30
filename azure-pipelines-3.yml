@@ -1,0 +1,88 @@
+# Azure Pipelines YAML for building and deploying ASP.NET Core project with two stages
+
+trigger:
+  branches:
+    include:
+      - master  # Trigger pipeline on push to master branch
+
+variables:
+  solution: '**/*.sln'  # Path to the solution file (adjust if different)
+  buildConfiguration: 'Release'  # Build configuration
+  serviceConnectionName: 'myserviceconnection'  # Service connection name
+  webAppName: 'mywebapp2000'  # Azure Web App name
+  artifactName: 'mywebapp2000-artifact'  # Artifact name
+
+stages:
+  # Stage 1: Build
+  - stage: Build
+    displayName: 'Build Stage'
+    jobs:
+      - job: BuildJob
+        displayName: 'Build Job'
+        pool:
+          vmImage: 'ubuntu-latest'  # Use Ubuntu for build
+        steps:
+          # Install .NET SDK
+          - task: UseDotNet@2
+            displayName: 'Install .NET SDK'
+            inputs:
+              packageType: 'sdk'
+              version: '8.x'  # Adjust to your .NET version (e.g., 6.x, 7.x)
+
+          # Restore NuGet packages
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore NuGet packages'
+            inputs:
+              command: 'restore'
+              projects: '$(solution)'
+              feedsToUse: 'select'
+
+          # Build the solution
+          - script: dotnet build --configuration $(buildConfiguration)
+            displayName: 'dotnet build $(buildConfiguration)'
+
+          # Publish the project
+          - task: DotNetCoreCLI@2
+            displayName: 'Publish project'
+            inputs:
+              command: 'publish'
+              publishWebProjects: true
+              arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/$(webAppName)'
+              zipAfterPublish: true
+
+          # Publish build artifacts
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish artifacts'
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: '$(artifactName)'
+              publishLocation: 'Container'
+
+  # Stage 2: Deploy
+  - stage: Deploy
+    displayName: 'Deploy Stage'
+    dependsOn: Build  # Deploy only after Build stage succeeds
+    condition: succeeded()  # Run only if Build stage is successful
+    jobs:
+      - job: DeployJob
+        displayName: 'Deploy Job'
+        pool:
+          vmImage: 'ubuntu-latest'  # Use Ubuntu for deployment
+        steps:
+          # Download the published artifact
+          - task: DownloadBuildArtifacts@1
+            displayName: 'Download build artifacts'
+            inputs:
+              buildType: 'current'
+              artifactName: '$(artifactName)'
+              downloadPath: '$(System.ArtifactsDirectory)'
+
+          # Deploy to Azure Web App
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Azure Web App'
+            inputs:
+              azureSubscription: '$(serviceConnectionName)'  # Use myserviceconnection
+              appType: 'webAppLinux'  # Adjust to 'webApp' for Windows-based App Service
+              appName: '$(webAppName)'  # Azure Web App name (mywebapp2000)
+              package: '$(System.ArtifactsDirectory)/$(artifactName)/$(webAppName)/*.zip'
+              deploymentMethod: 'auto'
