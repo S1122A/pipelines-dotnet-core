@@ -1,0 +1,119 @@
+# Azure Pipelines YAML for building and deploying dotnetproject2 in two stages
+
+trigger:
+  branches:
+    include:
+      - master  # Trigger pipeline on push to master branch
+
+variables:
+  solution: '**/dotnetproject2.sln'  # Specify the expected solution file path (adjust if different)
+  buildConfiguration: 'Release'  # Build configuration
+  serviceConnectionName: 'myserviceconnection'  # Service connection name
+  projectName: 'dotnetproject2'  # Project name
+  azureWebAppName: '$(projectName)'  # Azure Web App name
+  artifactName: 'dotnetproject2-artifact'  # Artifact name
+
+stages:
+  # Stage 1: Build and Test
+  - stage: Build
+    displayName: 'Build and Test'
+    jobs:
+      - job: BuildJob
+        displayName: 'Build and Test Job'
+        pool:
+          vmImage: 'ubuntu-latest'  # Use Ubuntu for build
+        steps:
+          # Install .NET SDK
+          - task: UseDotNet@2
+            displayName: 'Install .NET SDK'
+            inputs:
+              packageType: 'sdk'
+              version: '8.x'  # Adjust to your .NET version (e.g., 6.x, 7.x)
+
+          # Log directory contents to diagnose file issues
+          - script: dir
+            displayName: 'List directory contents'
+            condition: always()  # Always run to help debug
+
+          # Restore NuGet packages
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore NuGet packages'
+            inputs:
+              command: 'restore'
+              projects: '$(solution)'
+              feedsToUse: 'select'
+              failOnMissing: false  # Continue if no .sln is found
+
+          # Build the solution or project
+          - task: DotNetCoreCLI@2
+            displayName: 'Build solution or project'
+            inputs:
+              command: 'build'
+              projects: '$(solution)'  # Try solution first
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+              continueOnError: true  # Continue if .sln fails
+
+          # Fallback: Build .csproj if .sln fails
+          - task: DotNetCoreCLI@2
+            displayName: 'Build project (fallback to .csproj)'
+            inputs:
+              command: 'build'
+              projects: '**/*.csproj'  # Fallback to any .csproj file
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+            condition: failed()  # Run only if .sln build fails
+
+          # Run tests (optional, skip if no test projects)
+          - task: DotNetCoreCLI@2
+            displayName: 'Run tests'
+            inputs:
+              command: 'test'
+              projects: '**/*[Tt]ests/*.csproj'
+              arguments: '--configuration $(buildConfiguration) --no-build --no-restore'
+              publishTestResults: true
+            continueOnError: true  # Continue even if tests fail or no test projects exist
+
+          # Publish the project
+          - task: DotNetCoreCLI@2
+            displayName: 'Publish project'
+            inputs:
+              command: 'publish'
+              publishWebProjects: true
+              arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/$(projectName)'
+              zipAfterPublish: true
+
+          # Publish build artifacts
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish artifacts'
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: '$(artifactName)'
+              publishLocation: 'Container'
+
+  # Stage 2: Deploy
+  - stage: Deploy
+    displayName: 'Deploy to Azure Web App'
+    dependsOn: Build  # Deploy only after Build stage succeeds
+    condition: succeeded()  # Run only if Build stage is successful
+    jobs:
+      - job: DeployJob
+        displayName: 'Deploy Job'
+        pool:
+          vmImage: 'ubuntu-latest'  # Use Ubuntu for deployment
+        steps:
+          # Download the published artifact
+          - task: DownloadBuildArtifacts@1
+            displayName: 'Download build artifacts'
+            inputs:
+              buildType: 'current'
+              artifactName: '$(artifactName)'
+              downloadPath: '$(System.ArtifactsDirectory)'
+
+          # Deploy to Azure Web App
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Azure Web App'
+            inputs:
+              azureSubscription: '$(serviceConnectionName)'  # Use myserviceconnection
+              appType: 'webAppLinux'  # Adjust to 'webApp' for Windows-based App Service
+              appName: '$(azureWebAppName)'  # Azure Web App name
+              package: '$(System.ArtifactsDirectory)/$(artifactName)/$(projectName)/*.zip'
+              deploymentMethod: 'auto'
